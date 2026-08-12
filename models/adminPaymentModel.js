@@ -94,10 +94,33 @@ const AdminPayment = {
     return rows[0] || null;
   },
 
-  updatePaymentStatus: async (orderId, paymentStatus) => {
+  // Removed: updatePaymentStatus. It set payment_status with no guard on the
+  // current value, which is what let two concurrent refunds both succeed. It
+  // had no callers left once the refund path moved to claimForRefund, and
+  // leaving an unguarded setter here is how that bug comes back — it is exactly
+  // what the next person reaches for. Add a conditional claim like the one
+  // below instead of a bare setter.
+
+  /**
+   * Claim an order for refunding. Returns true only for the caller that
+   * actually moved it out of its current state.
+   *
+   * The refund path used to read payment_status, compare it to 'refunded' in
+   * JavaScript, and then issue an unguarded UPDATE. Two requests arriving
+   * together both read 'paid', both passed the check and both refunded — a
+   * double-click on the admin panel was enough. The guard has to live in the
+   * WHERE clause so the database decides the winner, which is the same pattern
+   * PaymentModel.markOrderPaid already uses in the customer backend.
+   *
+   * @returns {Promise<boolean>} true if this call owns the refund
+   */
+  claimForRefund: async (orderId) => {
     const [result] = await pool.query(
-      `UPDATE orders SET payment_status = ?, updated_at = NOW() WHERE id = ?`,
-      [paymentStatus, orderId]
+      `UPDATE orders
+          SET payment_status = 'refunded', updated_at = NOW()
+        WHERE id = ?
+          AND payment_status <> 'refunded'`,
+      [orderId]
     );
     return result.affectedRows > 0;
   }

@@ -104,18 +104,39 @@ async function getTransactionDetail(orderId) {
   return tx;
 }
 
-async function refundTransaction(orderId, { reason, refundAmount }) {
+async function refundTransaction(orderId, { reason, refundAmount } = {}) {
   const tx = await AdminPayment.getTransactionById(orderId);
   if (!tx) throw new ApiError(404, 'Transaction not found');
+
+  // Cheap pre-check so the common case gets a clear message. It can lose a
+  // race; the conditional UPDATE below cannot, which is why both exist.
   if (tx.payment_status === 'refunded') {
     throw new ApiError(400, 'Transaction has already been refunded');
   }
 
-  await AdminPayment.updatePaymentStatus(orderId, 'refunded');
+  // A partial refund can never exceed what was actually paid. The validator
+  // cannot enforce this — it never sees the order — so it belongs here, against
+  // the transaction already loaded above.
+  const orderTotal = Number(tx.total_amount) || 0;
+  const amount = refundAmount === undefined ? orderTotal : Number(refundAmount);
+  if (amount > orderTotal) {
+    throw new ApiError(
+      400,
+      `Refund of ${amount} exceeds the order total of ${orderTotal}`
+    );
+  }
+
+  // THE claim. Whoever flips the row owns the refund; everyone else is told it
+  // is already done rather than issuing a second one.
+  const claimed = await AdminPayment.claimForRefund(orderId);
+  if (!claimed) {
+    throw new ApiError(400, 'Transaction has already been refunded');
+  }
+
   return {
     order_id: orderId,
     payment_status: 'refunded',
-    refunded_amount: refundAmount || tx.total_amount,
+    refunded_amount: amount,
     reason: reason || 'Admin initiated refund',
     refunded_at: new Date().toISOString(),
   };
