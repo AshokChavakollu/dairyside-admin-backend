@@ -23,6 +23,17 @@ const SETTINGS_CATALOG = [
   { key: 'support_phone', default: '', description: 'Customer support phone', type: 'text' },
   { key: 'order_prefix', default: 'SWD', description: 'Order number prefix', type: 'text' },
   { key: 'maintenance_mode', default: 'false', description: 'Enable maintenance mode (disables ordering)', type: 'boolean' },
+  // ── Customer app announcement bar ──
+  // Drives the strip above the header on the customer site (RootLayout →
+  // AnnouncementBar). Nothing here is secret: the customer backend serves these
+  // four values UNAUTHENTICATED on GET /v1/announcement, so the message is
+  // public copy the moment it is enabled. `maintenance_mode` above is a
+  // separate switch and is deliberately NOT wired to this — the bar only
+  // informs, it does not block checkout.
+  { key: 'announcement_enabled', default: 'false', description: 'Show the announcement bar at the top of the customer app', type: 'boolean' },
+  { key: 'announcement_message', default: 'Ordering is temporarily disabled for maintenance. You can still browse and add items to your cart!', description: 'Message shown in the customer announcement bar', type: 'text' },
+  { key: 'announcement_variant', default: 'maintenance', description: 'Tone/colour of the announcement bar', type: 'select', options: ['maintenance', 'info', 'warning', 'success'] },
+  { key: 'announcement_dismissible', default: 'false', description: 'Let customers close the announcement bar for their session', type: 'boolean' },
   { key: 'razorpay_enabled', default: 'true', description: 'Enable Razorpay Payment Gateway', type: 'boolean' },
   { key: 'cod_enabled', default: 'true', description: 'Enable Cash on Delivery (COD)', type: 'boolean' },
   { key: 'wallet_enabled', default: 'true', description: 'Enable Wallet Payments', type: 'boolean' },
@@ -32,6 +43,21 @@ const SETTINGS_CATALOG = [
   { key: 'razorpay_key_secret', default: 'UCc6qOXIUjbjFS4TtP9QuXKn', description: 'Razorpay Key Secret', type: 'password' },
 ];
 const KNOWN_KEYS = new Set(SETTINGS_CATALOG.map((s) => s.key));
+
+// Per-key value rules. The Joi layer only checks the ENVELOPE (a map of string
+// keys to scalars) because the catalog above is what gives a key its meaning.
+// Anything the customer app then has to render — a variant name it has a
+// palette for, a message short enough to fit one strip — is rejected here
+// rather than stored and discovered later as a broken banner in production.
+const ANNOUNCEMENT_MESSAGE_MAX = 200;
+const VALUE_RULES = {
+  announcement_variant: (v) =>
+    SETTINGS_CATALOG.find((s) => s.key === 'announcement_variant').options.includes(String(v)) ||
+    'announcement_variant must be one of: maintenance, info, warning, success',
+  announcement_message: (v) =>
+    String(v).length <= ANNOUNCEMENT_MESSAGE_MAX ||
+    `announcement_message must be ${ANNOUNCEMENT_MESSAGE_MAX} characters or fewer`,
+};
 
 // ── Coupons ──
 // The admin UI speaks 'percentage'; the DB ENUM is ('flat','percent'). Map at
@@ -212,6 +238,9 @@ async function getSettings() {
     value: valueOf.has(s.key) ? valueOf.get(s.key) : s.default,
     description: s.description,
     type: s.type,
+    // Only present on `select` keys; the settings page renders a dropdown from
+    // it instead of a free-text box, so the allowed set lives in one place.
+    ...(s.options ? { options: s.options } : {}),
   }));
 }
 
@@ -223,6 +252,30 @@ async function updateSettings(body) {
 
   const unknown = entries.filter(([k]) => !KNOWN_KEYS.has(k)).map(([k]) => k);
   if (unknown.length) throw new ApiError(400, `Unknown setting keys: ${unknown.join(', ')}`);
+
+  // Validate EVERY value before writing ANY of them. The loop below is a series
+  // of independent upserts, not a transaction — bailing out halfway would leave
+  // the announcement bar switched on with a message that never saved.
+  const errors = [];
+  for (const [key, value] of entries) {
+    const verdict = VALUE_RULES[key] ? VALUE_RULES[key](value) : true;
+    if (verdict !== true) errors.push(verdict);
+  }
+
+  // Cross-field: turning the bar on with nothing to say paints an empty strip
+  // across every customer page. Checked against the MERGED state rather than
+  // the payload alone, because a partial update can flip the toggle while the
+  // message stays at whatever is already stored.
+  const merged = new Map((await getSettings()).map((s) => [s.key, s.value]));
+  for (const [key, value] of entries) merged.set(key, String(value));
+  if (
+    merged.get('announcement_enabled') === 'true' &&
+    !String(merged.get('announcement_message') || '').trim()
+  ) {
+    errors.push('announcement_message cannot be empty while the announcement bar is enabled');
+  }
+
+  if (errors.length) throw new ApiError(400, errors.join('; '));
 
   for (const [key, value] of entries) {
     await AdminMarketing.upsertSetting(key, String(value));
