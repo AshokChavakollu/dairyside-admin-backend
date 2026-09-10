@@ -18,6 +18,7 @@ router.use('/pincodes', require('./pincodeRoutes'));
 router.use('/categories', require('./adminCategoryRoutes'));
 router.use('/inventory', require('./adminInventoryRoutes')); // stock: restock/adjust/threshold/low-stock/ledger
 router.use('/audit-logs', require('./auditRoutes')); // read-only customer audit trail
+router.use('/reviews', require('./reviewRoutes')); // read customer reviews, promote to home page
 router.use('/', require('./marketingRoutes')); // /coupons, /banners, /settings, /delivery-slots, /contact-messages
 router.use('/', require('./paymentRoutes')); // /payments/settings, /payments/stats, /payments/transactions
 router.use('/', require('./adminProductRoutes')); // /products, /variants
