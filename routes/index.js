@@ -21,6 +21,7 @@ router.use('/audit-logs', require('./auditRoutes')); // read-only customer audit
 router.use('/reviews', require('./reviewRoutes')); // read customer reviews, promote to home page
 router.use('/', require('./marketingRoutes')); // /coupons, /banners, /settings, /delivery-slots, /contact-messages
 router.use('/', require('./paymentRoutes')); // /payments/settings, /payments/stats, /payments/transactions
+router.use('/', require('./billingRoutes')); // /billing/invoices, /billing/payments — counter collections
 router.use('/', require('./adminProductRoutes')); // /products, /variants
 
 module.exports = router;
